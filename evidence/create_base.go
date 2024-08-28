@@ -1,6 +1,7 @@
 package evidence
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -57,7 +58,12 @@ func (c *createEvidenceBase) buildIntotoStatementJson(subject, subjectSha256 str
 		return nil, err
 	}
 
-	statement := intoto.NewStatement(predicate, c.predicateType, c.serverDetails.User)
+	user, err := c.getUserName()
+	if err != nil {
+		return nil, err
+	}
+
+	statement := intoto.NewStatement(predicate, c.predicateType, user)
 	err = statement.SetSubject(artifactoryClient, subject, subjectSha256)
 	if err != nil {
 		return nil, err
@@ -173,4 +179,68 @@ func createSigners(privateKey *cryptox.SSLibKey) ([]dsse.Signer, error) {
 		return nil, errors.New("unsupported key type")
 	}
 	return signers, nil
+}
+
+func (c *createEvidenceBase) getUserName() (string, error) {
+	var userName = c.serverDetails.User
+	if userName != "" {
+		return userName, nil
+	}
+	return c.fetchUserFromToken()
+}
+
+func (c *createEvidenceBase) fetchUserFromToken() (string, error) {
+	var accessToken = c.serverDetails.AccessToken
+	if accessToken == "" {
+		return "", errors.New("invalid bearer token")
+	}
+
+	segments := strings.Split(accessToken, ".")
+	if len(segments) < 2 {
+		return "", errors.New("invalid bearer token")
+	}
+	payload := segments[1]
+
+	// Decode the payload
+	decodedPayload, err := base64urlDecode(payload)
+	if err != nil {
+		return "", err
+	}
+
+	// Parse the JSON payload
+	var payloadData map[string]interface{}
+	err = json.Unmarshal(decodedPayload, &payloadData)
+	if err != nil {
+		return "", err
+	}
+
+	// Extract the "sub" field
+	sub, ok := payloadData["sub"].(string)
+	if !ok {
+		return "", errors.New("failed to get user")
+	}
+	username := extractUsernameFromSubjectField(sub)
+
+	return username, nil
+}
+
+func extractUsernameFromSubjectField(subject string) string {
+	if strings.Contains(subject, "/users/") {
+		parts := strings.Split(subject, "/users/")
+		return parts[1]
+	}
+	return subject
+}
+
+func base64urlDecode(encoded string) ([]byte, error) {
+	// Replace URL-safe characters and add padding if necessary
+	encoded = strings.ReplaceAll(encoded, "-", "+")
+	encoded = strings.ReplaceAll(encoded, "_", "/")
+	switch len(encoded) % 4 {
+	case 2:
+		encoded += "=="
+	case 3:
+		encoded += "="
+	}
+	return base64.StdEncoding.DecodeString(encoded)
 }
